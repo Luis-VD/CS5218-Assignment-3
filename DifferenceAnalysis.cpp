@@ -22,16 +22,20 @@ Figured there was no reason to reinvent the wheel... right?
 
 using namespace llvm;
 
-std::set<std::string> processVars(BasicBlock*,std::set<Instruction*>);
-std::set<Instruction*> union_sets(std::set<Instruction*>, std::set<Instruction*>);
+std::set<std::string> processVars(BasicBlock*,std::set<std::string>);
+std::set<std::string> union_sets(std::set<std::string>, std::set<std::string>);
 std::string getSimpleNodeLabel(const BasicBlock *Node);
-void printAnalysisMap(std::map<std::string,std::set<Instruction*>> analysisMap);
+void printAnalysisMap(std::map<std::string,std::set<std::string>> analysisMap);
 std::string getSimpleValueLabel(const Value *Val);
 std::string getSimpleInstructionLabel(const Instruction *Inst);
 std::set<std::string> ourVariables {}; //Initializing the set of ourVariables elements with the one we know. Source
 std::set<std::string> allVariables {};
 std::map<std::string,int> varValuesMap;
 std::map<std::string,int> allVarsMap;
+int loopsCounter = 0;
+std::string lastFeasibleSeparation;
+std::string lastSeparation;
+int globalSeparation = 0;
 int main(int argc, char **argv)
 {
     // Read the IR file.
@@ -98,21 +102,29 @@ int main(int argc, char **argv)
             // for all successor basic blocks, add them plus the updatedVars to the stack 
             // if fixpoint condition is not met.
             // Fixpoint Condition:
-            // We only add successor nodes to the stack if the union of the new list of initialzied ourVariables for 
-            // the successor node is different from the currently stored list of initialzied ourVariables
+            // We only add successor nodes to the stack if the union of the new list of initialized ourVariables for 
+            // the successor node is different from the currently stored list of initialized ourVariables
             // for the successor node.
             
             // Load the current stored analysis for a successor node
             BasicBlock *Succ = TInst->getSuccessor(i);    
-            std::set<Instruction*> succTaintedVars = analysisMap[getSimpleNodeLabel(Succ)];
+            std::set<std::string> succTaintedVars = analysisMap[getSimpleNodeLabel(Succ)];
 	        if (succTaintedVars != unionVars){
-	            std::pair<BasicBlock*,std::set<Instruction*> > succAnalysisNode = std::make_pair(Succ,updatedVars);
+	            std::pair<BasicBlock*,std::set<std::string> > succAnalysisNode = std::make_pair(Succ,updatedVars);
 	           traversalStack.push(succAnalysisNode);
             }     
     	}	
     
     }
-    printAnalysisMap(analysisMap);
+    //printAnalysisMap(analysisMap);
+    errs() << lastFeasibleSeparation <<"\n";
+    errs() << lastSeparation <<"\n";
+
+    //std::cout<<"All variables: \n";
+    //for (auto specificVar : allVariables)
+    //{
+    //    std::cout << specificVar << ' ';
+    //}
     return 0;
 }
 
@@ -126,7 +138,7 @@ int main(int argc, char **argv)
 // This function receives a list of ourVariables ourVariables before a basic block
 // and returns an updated list of ourVariables ourVariables after the basic block
 std::set<std::string> processVars(BasicBlock* BB,
-				    std::set<Instruction*> blockVars)
+				    std::set<std::string> blockVars)
 {
   std::set<std::string> updatedVars(blockVars);
   int largestSeparation = 0;
@@ -139,6 +151,12 @@ std::set<std::string> processVars(BasicBlock* BB,
     if (isa<AllocaInst>(I)){   
       Value* left = I.getOperand(0);
       //If the instruction deals with a known ourVariables element (alloca of source) include the instruction as Tainted var
+      if (getSimpleInstructionLabel(&I) == "N"){
+        //ourVariables.insert(getSimpleInstructionLabel(&I));
+        allVariables.insert(getSimpleInstructionLabel(&I));
+        //varValuesMap[getSimpleInstructionLabel(&I)] = 1; //We assume all declared ourVariables are initialized with 0
+        allVarsMap[getSimpleInstructionLabel(&I)] = 99;
+      }else
       if (getSimpleInstructionLabel(&I)!= "%1"){
         ourVariables.insert(getSimpleInstructionLabel(&I));
         allVariables.insert(getSimpleInstructionLabel(&I));
@@ -152,19 +170,27 @@ std::set<std::string> processVars(BasicBlock* BB,
     if (isa<StoreInst>(I)){
 
       Value* left = I.getOperand(0);
-      Value* v = I.getOperand(1);
-      int numValue;
-      std::istringstream iss (getSimpleValueLabel(left));
-      iss >> numValue;
-      //If the Storer is a ourVariables element, take action, otherwise ignore
-      if (ourVariables.find(getSimpleValueLabel(v))!= ourVariables.end()){
-        //Instruction* var = dyn_cast<Instruction>(v);
-        //updatedVars.insert(var);
-        //ourVariables.insert(getSimpleValueLabel(v));
-        varValuesMap[getSimpleValueLabel(v)] = numValue;
+      Value* right = I.getOperand(1);
+      int intLeft = 0;
+      int intRight = 0;
+      if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
+        intLeft = allVarsMap[getSimpleValueLabel(left)];
+      } else{
+        int valLeft;
+        std::istringstream iss (getSimpleValueLabel(left));
+        iss >> valLeft;
+        intLeft = valLeft;
       }
-      allVarsMap[getSimpleValueLabel(v)] = numValue;
-      allVariables.insert(getSimpleValueLabel(v));
+      if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
+        intRight = allVarsMap[getSimpleValueLabel(right)];
+      } else{
+        int valRight;
+        std::istringstream iss (getSimpleValueLabel(right));
+        iss >> valRight;
+        intRight = valRight;
+      }
+      allVarsMap[getSimpleValueLabel(right)] = intLeft;
+      //allVariables.insert(getSimpleValueLabel(right));
     }
 
     //Check if an Instruction is of the type Load Instruction
@@ -180,8 +206,90 @@ std::set<std::string> processVars(BasicBlock* BB,
       allVariables.insert(getSimpleInstructionLabel(&I));
     }
 
+
+    if (isa<BranchInst>(I)){
+	    BranchInst* br = dyn_cast<BranchInst>(&I);
+	    if(!br->isConditional())
+		    continue;
+	    llvm::CmpInst *cmp = dyn_cast<llvm::CmpInst>(br->getCondition());
+
+	    Value* left = I.getOperand(0);
+        Value* right = I.getOperand(1);
+        int intLeft = 0;
+        int intRight = 0;
+        if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
+            intLeft = allVarsMap[getSimpleValueLabel(left)];
+        } else{
+            int valLeft;
+            std::istringstream iss (getSimpleValueLabel(left));
+            iss >> valLeft;
+            intLeft = valLeft;
+        }
+        if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
+            intRight = allVarsMap[getSimpleValueLabel(right)];
+        } else{
+            int valRight;
+            std::istringstream iss (getSimpleValueLabel(right));
+            iss >> valRight;
+            intRight = valRight;
+        }
+        if(loopsCounter <= 20){
+	        switch (cmp->getPredicate()) {
+	          case llvm::CmpInst::ICMP_EQ:{
+		          if(intLeft == intRight){
+                        ;
+                    }else{
+                        updatedVars.insert("Condition not met, counter: "+std::to_string(loopsCounter));
+                    }
+		          break;
+	          }
+	          case llvm::CmpInst::ICMP_NE:{
+		          if(intLeft != intRight){
+                        ;
+                    }else{
+                        updatedVars.insert("Condition not met, counter: "+std::to_string(loopsCounter));
+                    }
+		          break;
+	          }
+	          case llvm::CmpInst::ICMP_SGT:{
+		          if(intLeft > intRight){
+                        ;
+                    }else{
+                        updatedVars.insert("Condition not met, counter: "+std::to_string(loopsCounter));
+                    }
+		          break;
+	          }
+	          case llvm::CmpInst::ICMP_SGE:{
+		          if(intLeft >= intRight){
+                        ;
+                    }else{
+                        updatedVars.insert("Condition not met, counter: "+std::to_string(loopsCounter));
+                    }
+		          break;
+	          }
+	          case llvm::CmpInst::ICMP_SLE:{
+		          if(intLeft <= intRight){
+                        ;
+                    }else{
+                        updatedVars.insert("Condition not met, counter: "+std::to_string(loopsCounter));
+                    }
+		          break;
+	          }
+	          case llvm::CmpInst::ICMP_SLT:{
+		          if(intLeft < intRight){
+                        ;
+                    }else{
+                        updatedVars.insert("Condition not met, counter: "+std::to_string(loopsCounter));
+                    }
+		          break;
+	          }
+            }
+	      }
+        loopsCounter++;
+       }
+
     //Example: %13 = add nsw i32 %7, %12
-    if (isa<AddInst>(I)){   
+    if (I.getOpcode() == BinaryOperator::Add){   
       Value* left = I.getOperand(0);
       Value* right = I.getOperand(1);
       int intLeft = 0;
@@ -203,9 +311,10 @@ std::set<std::string> processVars(BasicBlock* BB,
         intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft+intRight;
+      allVariables.insert(getSimpleInstructionLabel(&I));
     }
 
-    if (isa<SubInst>(I)){   
+    if (I.getOpcode() == BinaryOperator::Sub){   
       Value* left = I.getOperand(0);
       Value* right = I.getOperand(1);
       //If the instruction deals with a known ourVariables element (alloca of source) include the instruction as Tainted var
@@ -228,9 +337,10 @@ std::set<std::string> processVars(BasicBlock* BB,
         intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft-intRight;
+      allVariables.insert(getSimpleInstructionLabel(&I));
     }
 
-    if (isa<UdivInst>(I)){   
+    if (I.getOpcode() == BinaryOperator::SDiv){   
       Value* left = I.getOperand(0);
       Value* right = I.getOperand(1);
       //If the instruction deals with a known ourVariables element (alloca of source) include the instruction as Tainted var
@@ -253,34 +363,10 @@ std::set<std::string> processVars(BasicBlock* BB,
         intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft/intRight;
+      allVariables.insert(getSimpleInstructionLabel(&I));
     }
 
-    if (isa<SdivInst>(I)){   
-      Value* left = I.getOperand(0);
-      Value* right = I.getOperand(1);
-      //If the instruction deals with a known ourVariables element (alloca of source) include the instruction as Tainted var
-      int intLeft = 0;
-      int intRight = 0;
-      if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
-        intLeft = allVarsMap[getSimpleValueLabel(left)];
-      } else{
-        int valLeft;
-        std::istringstream iss (getSimpleValueLabel(left));
-        iss >> valLeft;
-        intLeft = valLeft;
-      }
-      if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
-        intRight = allVarsMap[getSimpleValueLabel(right)];
-      } else{
-        int valRight;
-        std::istringstream iss (getSimpleValueLabel(right));
-        iss >> valRight;
-        intRight = valRight;
-      }
-      allVarsMap[getSimpleInstructionLabel(&I)] = intLeft/intRight;
-    }
-
-    if (isa<MulInst>(I)){   
+    if (I.getOpcode() == BinaryOperator::Mul){   
       Value* left = I.getOperand(0);
       Value* right = I.getOperand(1);
       //If the instruction deals with a known ourVariables element (alloca of source) include the instruction as Tainted var
@@ -303,9 +389,10 @@ std::set<std::string> processVars(BasicBlock* BB,
         intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft*intRight;
+      allVariables.insert(getSimpleInstructionLabel(&I));
     }
 
-    if (isa<SremInst>(I)){   
+    if (I.getOpcode() == BinaryOperator::SRem){   
       Value* left = I.getOperand(0);
       Value* right = I.getOperand(1);
       //If the instruction deals with a known ourVariables element (alloca of source) include the instruction as Tainted var
@@ -328,17 +415,27 @@ std::set<std::string> processVars(BasicBlock* BB,
         intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft%intRight;
+      allVariables.insert(getSimpleInstructionLabel(&I));
     }
 
 
   }
-
+  std::string updatedDifference="";
   for (auto firstVariable: ourVariables){
     for(auto secondVariable: ourVariables){
       int difference = allVarsMap[firstVariable] - allVarsMap[secondVariable];
       if(difference > largestSeparation){
         largestSeparation = difference;
-        std::string updatedDifference = "Largest Separation in Block: " + firstVariable + " --> " + secondVariable + " : " + std::to_string(largestSeparation);
+        if(loopsCounter <= 20){
+            updatedDifference = "Largest Separation in Block: " + firstVariable + " --> " + secondVariable + " : " + std::to_string(largestSeparation);
+            if(difference>globalSeparation){
+                globalSeparation = difference;
+                lastFeasibleSeparation = updatedDifference;
+            }
+        }else{
+            updatedDifference = "Finite bound not found: " + firstVariable + " --> " + secondVariable + " : INFINITE";
+            lastSeparation = updatedDifference;
+        }
       }
     }
   }
@@ -393,8 +490,8 @@ void printAnalysisMap(std::map<std::string,std::set<std::string>> analysisMap) {
     	std::string BBLabel = row.first;
     	errs() << BBLabel << ":\n";
     	for (std::string var : blockVars){
-    		errs() << "\t";
-    		var->dump();
+    		errs() << "\t"<<var<<"\n";
+    		//var->dump();
     	}
     	errs() << "\n";
     } 
