@@ -9,6 +9,7 @@ Figured there was no reason to reinvent the wheel... right?
 #include <stack>
 #include <algorithm>
 #include <cstdlib>
+#include <sstream>
 
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -48,17 +49,17 @@ int main(int argc, char **argv)
     Function *F = M->getFunction("main");
     
     // 2.Define analysisMap as a mapping of basic block labels to empty set (of instructions):      
-    std::map<std::string,std::set<Instruction*>> analysisMap;
+    std::map<std::string,std::set<std::string>> analysisMap;
     for (auto &BB: *F){
-      std::set<Instruction*> emptySet;
+      std::set<std::string> emptySet;
     	analysisMap[getSimpleNodeLabel(&BB)] = emptySet;
     }       
 
     // 3. Traversing the CFG in Depth First Order
-    std::stack<std::pair<BasicBlock*,std::set<Instruction*> > > traversalStack;
+    std::stack<std::pair<BasicBlock*,std::set<std::string> > > traversalStack;
     BasicBlock* entryBB = &F->getEntryBlock();
-    std::set<Instruction*> emptySet;
-    std::pair<BasicBlock*,std::set<Instruction*> > analysisNode = std::make_pair(entryBB,emptySet);
+    std::set<std::string> emptySet;
+    std::pair<BasicBlock*,std::set<std::string> > analysisNode = std::make_pair(entryBB,emptySet);
     traversalStack.push(analysisNode);
        
     // 4. while the stack is not empty we pop the top analysisNode
@@ -70,20 +71,20 @@ int main(int argc, char **argv)
     // from it, and then we add all its successors to it    
     while(!traversalStack.empty()){
         // Pop the top analysis node from stack
-        std::pair<BasicBlock*,std::set<Instruction*> > analysisNode = traversalStack.top();
+        std::pair<BasicBlock*,std::set<std::string> > analysisNode = traversalStack.top();
        	traversalStack.pop();
        	
 	    // Extract the basic block and the set of ourVariables ourVariables from  analysisNode
 	    BasicBlock* BB = analysisNode.first;
-      	std::set<Instruction*> blockVars = analysisNode.second;     
+      	std::set<std::string> blockVars = analysisNode.second;     
 
         // Extract updatedVars (The list of ourVariables ourVariables 
 	    // after BB) from BB and blockVars
-        std::set<Instruction*> updatedVars = processVars(BB,blockVars);
+        std::set<std::string> updatedVars = processVars(BB,blockVars);
         
         // Update the analysis of node BB in the MAP to the union of currently stored blockVars 
         // and the generated updatedVars
-        std::set<Instruction*> unionVars = union_sets(analysisMap[getSimpleNodeLabel(BB)],updatedVars); 
+        std::set<std::string> unionVars = union_sets(analysisMap[getSimpleNodeLabel(BB)],updatedVars); 
        	analysisMap[getSimpleNodeLabel(BB)] = unionVars;
         
         
@@ -152,14 +153,17 @@ std::set<std::string> processVars(BasicBlock* BB,
 
       Value* left = I.getOperand(0);
       Value* v = I.getOperand(1);
+      int numValue;
+      std::istringstream iss (getSimpleValueLabel(left));
+      iss >> numValue;
       //If the Storer is a ourVariables element, take action, otherwise ignore
       if (ourVariables.find(getSimpleValueLabel(v))!= ourVariables.end()){
         //Instruction* var = dyn_cast<Instruction>(v);
         //updatedVars.insert(var);
         //ourVariables.insert(getSimpleValueLabel(v));
-        varValuesMap[getSimpleValueLabel(v)] = dyn_cast<int>(getSimpleValueLabel(left));
+        varValuesMap[getSimpleValueLabel(v)] = numValue;
       }
-      allVarsMap[getSimpleValueLabel(v)] = dyn_cast<int>(getSimpleValueLabel(left));
+      allVarsMap[getSimpleValueLabel(v)] = numValue;
       allVariables.insert(getSimpleValueLabel(v));
     }
 
@@ -183,14 +187,20 @@ std::set<std::string> processVars(BasicBlock* BB,
       int intLeft = 0;
       int intRight = 0;
       if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
-        intLeft = allVarsMap[getSimpleValueLabel(left)]
+        intLeft = allVarsMap[getSimpleValueLabel(left)];
       } else{
-        intLeft = dyn_cast<int>(getSimpleValueLabel(left))
+        int valLeft;
+        std::istringstream iss (getSimpleValueLabel(left));
+        iss >> valLeft;
+        intLeft = valLeft;
       }
       if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
-        intRight = allVarsMap[getSimpleValueLabel(right)]
+        intRight = allVarsMap[getSimpleValueLabel(right)];
       } else{
-        intRight = dyn_cast<int>(getSimpleValueLabel(right))
+        int valRight;
+        std::istringstream iss (getSimpleValueLabel(right));
+        iss >> valRight;
+        intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft+intRight;
     }
@@ -202,14 +212,20 @@ std::set<std::string> processVars(BasicBlock* BB,
       int intLeft = 0;
       int intRight = 0;
       if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
-        intLeft = allVarsMap[getSimpleValueLabel(left)]
+        intLeft = allVarsMap[getSimpleValueLabel(left)];
       } else{
-        intLeft = dyn_cast<int>(getSimpleValueLabel(left))
+        int valLeft;
+        std::istringstream iss (getSimpleValueLabel(left));
+        iss >> valLeft;
+        intLeft = valLeft;
       }
       if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
-        intRight = allVarsMap[getSimpleValueLabel(right)]
+        intRight = allVarsMap[getSimpleValueLabel(right)];
       } else{
-        intRight = dyn_cast<int>(getSimpleValueLabel(right))
+        int valRight;
+        std::istringstream iss (getSimpleValueLabel(right));
+        iss >> valRight;
+        intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft-intRight;
     }
@@ -221,14 +237,20 @@ std::set<std::string> processVars(BasicBlock* BB,
       int intLeft = 0;
       int intRight = 0;
       if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
-        intLeft = allVarsMap[getSimpleValueLabel(left)]
+        intLeft = allVarsMap[getSimpleValueLabel(left)];
       } else{
-        intLeft = dyn_cast<int>(getSimpleValueLabel(left))
+        int valLeft;
+        std::istringstream iss (getSimpleValueLabel(left));
+        iss >> valLeft;
+        intLeft = valLeft;
       }
       if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
-        intRight = allVarsMap[getSimpleValueLabel(right)]
+        intRight = allVarsMap[getSimpleValueLabel(right)];
       } else{
-        intRight = dyn_cast<int>(getSimpleValueLabel(right))
+        int valRight;
+        std::istringstream iss (getSimpleValueLabel(right));
+        iss >> valRight;
+        intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft/intRight;
     }
@@ -240,14 +262,20 @@ std::set<std::string> processVars(BasicBlock* BB,
       int intLeft = 0;
       int intRight = 0;
       if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
-        intLeft = allVarsMap[getSimpleValueLabel(left)]
+        intLeft = allVarsMap[getSimpleValueLabel(left)];
       } else{
-        intLeft = dyn_cast<int>(getSimpleValueLabel(left))
+        int valLeft;
+        std::istringstream iss (getSimpleValueLabel(left));
+        iss >> valLeft;
+        intLeft = valLeft;
       }
       if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
-        intRight = allVarsMap[getSimpleValueLabel(right)]
+        intRight = allVarsMap[getSimpleValueLabel(right)];
       } else{
-        intRight = dyn_cast<int>(getSimpleValueLabel(right))
+        int valRight;
+        std::istringstream iss (getSimpleValueLabel(right));
+        iss >> valRight;
+        intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft/intRight;
     }
@@ -259,14 +287,20 @@ std::set<std::string> processVars(BasicBlock* BB,
       int intLeft = 0;
       int intRight = 0;
       if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
-        intLeft = allVarsMap[getSimpleValueLabel(left)]
+        intLeft = allVarsMap[getSimpleValueLabel(left)];
       } else{
-        intLeft = dyn_cast<int>(getSimpleValueLabel(left))
+        int valLeft;
+        std::istringstream iss (getSimpleValueLabel(left));
+        iss >> valLeft;
+        intLeft = valLeft;
       }
       if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
-        intRight = allVarsMap[getSimpleValueLabel(right)]
+        intRight = allVarsMap[getSimpleValueLabel(right)];
       } else{
-        intRight = dyn_cast<int>(getSimpleValueLabel(right))
+        int valRight;
+        std::istringstream iss (getSimpleValueLabel(right));
+        iss >> valRight;
+        intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft*intRight;
     }
@@ -278,14 +312,20 @@ std::set<std::string> processVars(BasicBlock* BB,
       int intLeft = 0;
       int intRight = 0;
       if (allVariables.find(getSimpleValueLabel(left))!= allVariables.end()){
-        intLeft = allVarsMap[getSimpleValueLabel(left)]
+        intLeft = allVarsMap[getSimpleValueLabel(left)];
       } else{
-        intLeft = dyn_cast<int>(getSimpleValueLabel(left))
+        int valLeft;
+        std::istringstream iss (getSimpleValueLabel(left));
+        iss >> valLeft;
+        intLeft = valLeft;
       }
       if (allVariables.find(getSimpleValueLabel(right))!= allVariables.end()){
-        intRight = allVarsMap[getSimpleValueLabel(right)]
+        intRight = allVarsMap[getSimpleValueLabel(right)];
       } else{
-        intRight = dyn_cast<int>(getSimpleValueLabel(right))
+        int valRight;
+        std::istringstream iss (getSimpleValueLabel(right));
+        iss >> valRight;
+        intRight = valRight;
       }
       allVarsMap[getSimpleInstructionLabel(&I)] = intLeft%intRight;
     }
