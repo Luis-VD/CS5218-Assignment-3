@@ -94,177 +94,6 @@ class interval {
         }
 };
 
-int main(int argc, char **argv) 
-{
-    LLVMContext &Context = getGlobalContext();
-    SMDiagnostic Err;
-    Module *M = ParseIRFile(argv[1], Err, Context);
-    if (M == nullptr) {
-        fprintf(stderr, "error: failed to load LLVM IR file \"%s\"", argv[1]);
-        return EXIT_FAILURE;
-    }
-    Function *F = M->getFunction("main");
-    BasicBlock *entryBB = &F->getEntryBlock();
-
-    std::map<BasicBlock *, std::map<Instruction *, interval>> analysisMap;
-    std::map<std::string, Instruction *> varValuesMap;
-    std::stack<std::pair<BasicBlock *, std::map<Instruction *, interval>>> traversalStack;
-    std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> intervalAnalysisMap;
-    std::vector<std::map<Instruction *, interval>> mainConstraintMap;
-    std::stack<std::pair<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>>> intervalTraversalStack;
-    std::map<Instruction *, interval> emptySet;
-    traversalStack.push(std::make_pair(entryBB, emptySet));
-
-    while (!traversalStack.empty()) {
-        std::map<BasicBlock *, std::map<Instruction *, interval>> updatedMap;
-        auto top = traversalStack.top();
-        traversalStack.pop();
-
-        auto isDifferent = analyseBB(top.first, top.second, varValuesMap, analysisMap, updatedMap);
-        if (isDifferent) {
-            for (auto &p : updatedMap) {
-                traversalStack.push(p);
-            }
-        }
-    }
-
-    // generate constraints of the program
-    for (auto &instrMap : analysisMap) {
-        for (auto &rangesMap : instrMap.second) {
-            rangesMap.second = interval(negThreshold, posThreshold);
-        }
-
-        BasicBlock *BB = instrMap.first;
-        std::map<Instruction *, interval> rangesMap = instrMap.second;
-        std::map<BasicBlock *, std::map<Instruction *, interval>> result;
-
-        for (auto &I: *BB) {
-            if (I.getOpcode() == Instruction::Br) 
-            {
-                isBranchOper(BB, I, rangesMap, varValuesMap, result);
-                if (result.size() > 1) 
-                {
-                    for (auto &attributesMap : result) 
-                    {
-                        constraint[BB].push_back(attributesMap.second);
-                    }
-                    for (auto it = constraint[BB][0].begin(); it != constraint[BB][0].end();) 
-                    {
-                        bool erase = false;
-                        for (auto innerIt = constraint[BB][1].begin(); innerIt != constraint[BB][1].end(); innerIt++) 
-                        {
-                            if (it->second.toString() == innerIt->second.toString()) 
-                            {
-                                it = constraint[BB][0].erase(it);
-                                innerIt = constraint[BB][1].erase(innerIt);
-                                erase = true;
-                                break;
-                            }
-                        }
-                        if (!erase) it++;
-                    }
-                    for(auto it = constraint[BB][0].begin(); it != constraint[BB][0].end();)
-                    {
-                        if(it->first->getName().size() == 0)
-                        {
-                            it = constraint[BB][0].erase(it);
-                        }
-                        else
-                        {
-                            it++;
-                        }
-                    }
-                    for(auto it = constraint[BB][1].begin(); it != constraint[BB][1].end();)
-                    {
-                        if(it->first->getName().size() == 0)
-                        {
-                            it = constraint[BB][1].erase(it);
-                        }
-                        else
-                        {
-                            it++;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for (auto attributesMap : constraint) 
-    {
-        if (attributesMap.second.size() != 0 && attributesMap.second[0].size() != 0) 
-        {
-            if (mainConstraintMap.size() == 0) 
-            {
-                mainConstraintMap = attributesMap.second;
-            } 
-            else 
-            {
-                std::vector<std::map<Instruction *, interval>> backup = mainConstraintMap;
-                mainConstraintMap.clear();
-
-                for (auto constraintVector : attributesMap.second) 
-                {
-                    for (auto temporaryMap : backup) {
-                        for (auto it = constraintVector.begin(); it != constraintVector.end(); it++) 
-                        {
-                            if (temporaryMap.find(it->first) != temporaryMap.end()) 
-                            {
-                                temporaryMap.insert(std::make_pair(it->first, intersect(temporaryMap.find(it->first)->second, it->second)));
-                            }
-                            else 
-                            {
-                                temporaryMap.insert(*it);
-                            }
-                        }
-                        mainConstraintMap.push_back(temporaryMap);
-                    }
-                }
-            }
-        }
-    }
-
-    std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> emptyMap;
-    for (auto &instructionInterval : mainConstraintMap) {
-        emptyMap.insert(std::make_pair(&instructionInterval, instructionInterval));
-    }
-    intervalTraversalStack.push(std::make_pair(entryBB, emptyMap));
-
-    while (!intervalTraversalStack.empty()) 
-    {
-        std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> updatedMap;
-        auto pair = intervalTraversalStack.top();
-        intervalTraversalStack.pop();
-
-        auto isDifferent = checkBasicBlockRange(pair.first, pair.second, varValuesMap, intervalAnalysisMap, updatedMap);
-
-        if (isDifferent) {
-            for (auto &p : updatedMap) {
-                intervalTraversalStack.push(p);
-            }
-        }
-    }
-
-    for (auto &givenInterval : intervalAnalysisMap) {
-        givenInterval.first->printAsOperand(errs(), false);
-        errs() << "\n";
-        std::map<Instruction *, interval> result = constraintUpdate(givenInterval.first, givenInterval.second);
-
-        bool hasNone = false;
-        for (auto &element : result) {
-            if (element.second.hasNoRange())
-                hasNone = true;
-        }
-        if (!hasNone) {
-            for (auto &element : result) {
-                if(element.first->getName().size()!=0)
-                    std::cout << getSimpleLabel(*element.first) << "  ----> interval range:   " << element.second.toString()
-                          << std::endl;
-            }
-        }
-    }
-}
-
 std::map<BasicBlock *, std::vector<std::map<Instruction *, interval>>> constraint;
 interval sumOper(interval left, interval right) {
     if (left.hasNoRange()) {
@@ -1234,4 +1063,176 @@ bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, inter
         }
     }
     return false;
+}
+
+
+int main(int argc, char **argv) 
+{
+    LLVMContext &Context = getGlobalContext();
+    SMDiagnostic Err;
+    Module *M = ParseIRFile(argv[1], Err, Context);
+    if (M == nullptr) {
+        fprintf(stderr, "error: failed to load LLVM IR file \"%s\"", argv[1]);
+        return EXIT_FAILURE;
+    }
+    Function *F = M->getFunction("main");
+    BasicBlock *entryBB = &F->getEntryBlock();
+
+    std::map<BasicBlock *, std::map<Instruction *, interval>> analysisMap;
+    std::map<std::string, Instruction *> varValuesMap;
+    std::stack<std::pair<BasicBlock *, std::map<Instruction *, interval>>> traversalStack;
+    std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> intervalAnalysisMap;
+    std::vector<std::map<Instruction *, interval>> mainConstraintMap;
+    std::stack<std::pair<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>>> intervalTraversalStack;
+    std::map<Instruction *, interval> emptySet;
+    traversalStack.push(std::make_pair(entryBB, emptySet));
+
+    while (!traversalStack.empty()) {
+        std::map<BasicBlock *, std::map<Instruction *, interval>> updatedMap;
+        auto top = traversalStack.top();
+        traversalStack.pop();
+
+        auto isDifferent = analyseBB(top.first, top.second, varValuesMap, analysisMap, updatedMap);
+        if (isDifferent) {
+            for (auto &p : updatedMap) {
+                traversalStack.push(p);
+            }
+        }
+    }
+
+    // generate constraints of the program
+    for (auto &instrMap : analysisMap) {
+        for (auto &rangesMap : instrMap.second) {
+            rangesMap.second = interval(negThreshold, posThreshold);
+        }
+
+        BasicBlock *BB = instrMap.first;
+        std::map<Instruction *, interval> rangesMap = instrMap.second;
+        std::map<BasicBlock *, std::map<Instruction *, interval>> result;
+
+        for (auto &I: *BB) {
+            if (I.getOpcode() == Instruction::Br) 
+            {
+                isBranchOper(BB, I, rangesMap, varValuesMap, result);
+                if (result.size() > 1) 
+                {
+                    for (auto &attributesMap : result) 
+                    {
+                        constraint[BB].push_back(attributesMap.second);
+                    }
+                    for (auto it = constraint[BB][0].begin(); it != constraint[BB][0].end();) 
+                    {
+                        bool erase = false;
+                        for (auto innerIt = constraint[BB][1].begin(); innerIt != constraint[BB][1].end(); innerIt++) 
+                        {
+                            if (it->second.toString() == innerIt->second.toString()) 
+                            {
+                                it = constraint[BB][0].erase(it);
+                                innerIt = constraint[BB][1].erase(innerIt);
+                                erase = true;
+                                break;
+                            }
+                        }
+                        if (!erase) it++;
+                    }
+                    for(auto it = constraint[BB][0].begin(); it != constraint[BB][0].end();)
+                    {
+                        if(it->first->getName().size() == 0)
+                        {
+                            it = constraint[BB][0].erase(it);
+                        }
+                        else
+                        {
+                            it++;
+                        }
+                    }
+                    for(auto it = constraint[BB][1].begin(); it != constraint[BB][1].end();)
+                    {
+                        if(it->first->getName().size() == 0)
+                        {
+                            it = constraint[BB][1].erase(it);
+                        }
+                        else
+                        {
+                            it++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (auto attributesMap : constraint) 
+    {
+        if (attributesMap.second.size() != 0 && attributesMap.second[0].size() != 0) 
+        {
+            if (mainConstraintMap.size() == 0) 
+            {
+                mainConstraintMap = attributesMap.second;
+            } 
+            else 
+            {
+                std::vector<std::map<Instruction *, interval>> backup = mainConstraintMap;
+                mainConstraintMap.clear();
+
+                for (auto constraintVector : attributesMap.second) 
+                {
+                    for (auto temporaryMap : backup) {
+                        for (auto it = constraintVector.begin(); it != constraintVector.end(); it++) 
+                        {
+                            if (temporaryMap.find(it->first) != temporaryMap.end()) 
+                            {
+                                temporaryMap.insert(std::make_pair(it->first, intersect(temporaryMap.find(it->first)->second, it->second)));
+                            }
+                            else 
+                            {
+                                temporaryMap.insert(*it);
+                            }
+                        }
+                        mainConstraintMap.push_back(temporaryMap);
+                    }
+                }
+            }
+        }
+    }
+
+    std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> emptyMap;
+    for (auto &instructionInterval : mainConstraintMap) {
+        emptyMap.insert(std::make_pair(&instructionInterval, instructionInterval));
+    }
+    intervalTraversalStack.push(std::make_pair(entryBB, emptyMap));
+
+    while (!intervalTraversalStack.empty()) 
+    {
+        std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> updatedMap;
+        auto pair = intervalTraversalStack.top();
+        intervalTraversalStack.pop();
+
+        auto isDifferent = checkBasicBlockRange(pair.first, pair.second, varValuesMap, intervalAnalysisMap, updatedMap);
+
+        if (isDifferent) {
+            for (auto &p : updatedMap) {
+                intervalTraversalStack.push(p);
+            }
+        }
+    }
+
+    for (auto &givenInterval : intervalAnalysisMap) {
+        givenInterval.first->printAsOperand(errs(), false);
+        errs() << "\n";
+        std::map<Instruction *, interval> result = constraintUpdate(givenInterval.first, givenInterval.second);
+
+        bool hasNone = false;
+        for (auto &element : result) {
+            if (element.second.hasNoRange())
+                hasNone = true;
+        }
+        if (!hasNone) {
+            for (auto &element : result) {
+                if(element.first->getName().size()!=0)
+                    std::cout << getSimpleLabel(*element.first) << "  ----> interval range:   " << element.second.toString()
+                          << std::endl;
+            }
+        }
+    }
 }
