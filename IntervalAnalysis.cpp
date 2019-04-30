@@ -22,6 +22,69 @@
 
 using namespace llvm;
 
+class interval {
+private:
+    int lowBound;
+    int highBound;
+public:
+    interval() {
+        ;
+    }
+    interval(int lower, int upper) {
+        if (lower > upper) {
+            this->lowBound = posThreshold;
+            this->highBound = negThreshold;
+        }
+        if (lower <= negThreshold)
+            this->lowBound = negThreshold;
+        else if (lower >= posThreshold)
+            this->lowBound = posThreshold;
+        else
+            this->lowBound = lower;
+
+        if (upper >= posThreshold)
+            this->highBound = posThreshold;
+        else if (upper <= negThreshold)
+            this->highBound = negThreshold;
+        else
+            this->highBound = upper;
+    }
+    void setHighBound(int highBound) {
+        if (highBound >= posThreshold){
+            this->highBound = posThreshold;
+        }else if (highBound <= negThreshold){
+            this->highBound = negThreshold;
+        }else{
+            this->highBound = highBound;
+        }
+    }
+    void setLowBound(int lowBound) {
+        if (lowBound <= negThreshold){
+            this->lowBound = negThreshold;
+        }else if (lowBound >= posThreshold){
+            this->lowBound = posThreshold;
+        }else{
+            this->lowBound = lowBound;
+        }
+    }
+    int getHighBound() {
+        return this->highBound;
+    }
+    int getLowBound() {
+        return this->lowBound;
+    }
+    bool hasNoRange() {
+        return this->getLowBound() == posThreshold && this->getHighBound() == negThreshold;
+    }
+    std::string toString() {
+        if (this->hasNoRange()){
+            return "[ , ]";
+        }
+        return "[ " + (this->getLowBound() == negThreshold ? "-INF" : std::to_string(this->getLowBound())) + " , " +
+               (this->getHighBound() == posThreshold ? "+INF" : std::to_string(this->getHighBound())) + " ]";
+    }
+};
+
 void storeOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap);
 void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap,
                   std::map<std::string, Instruction *> &varValuesMap,
@@ -32,76 +95,6 @@ bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, inter
 
 const static int posThreshold = 9999;
 const static int negThreshold = -9999;
-
-class interval {
-    private:
-        int lowBound;
-        int highBound;
-    public:
-        interval() {
-            ;
-        }
-        interval(int lower, int upper) {
-            if (lower > upper) {
-                this->lowBound = posThreshold;
-                this->highBound = negThreshold;
-            }
-            if (lower <= negThreshold)
-                this->lowBound = negThreshold;
-            else if (lower >= posThreshold)
-                this->lowBound = posThreshold;
-            else
-                this->lowBound = lower;
-
-            if (upper >= posThreshold)
-                this->highBound = posThreshold;
-            else if (upper <= negThreshold)
-                this->highBound = negThreshold;
-            else
-                this->highBound = upper;
-        }
-
-
-        void setHighBound(int highBound) {
-            if (highBound >= posThreshold){
-                this->highBound = posThreshold;
-            }else if (highBound <= negThreshold){
-                this->highBound = negThreshold;
-            }else{
-                this->highBound = highBound;
-            }
-        }
-
-        void setLowBound(int lowBound) {
-            if (lowBound <= negThreshold){
-                this->lowBound = negThreshold;
-            }else if (lowBound >= posThreshold){
-                this->lowBound = posThreshold;
-            }else{
-                this->lowBound = lowBound;
-            }
-        }
-
-        int getHighBound() {
-            return this->highBound;
-        }
-
-        int getLowBound() {
-            return this->lowBound;
-        }
-
-        bool hasNoRange() {
-            return this->getLowBound() == posThreshold && this->getHighBound() == negThreshold;
-        }
-
-        std::string toString() {
-            if (this->hasNoRange()){
-                return "[ , ]";
-            }
-            return "[ " + (this->getLowBound() == negThreshold ? "-INF" : std::to_string(this->getLowBound())) + " , " +
-                   (this->getHighBound() == posThreshold ? "+INF" : std::to_string(this->getHighBound())) + " ]";
-        }
-};
 
 std::map<BasicBlock *, std::vector<std::map<Instruction *, interval>>> constraint;
 
