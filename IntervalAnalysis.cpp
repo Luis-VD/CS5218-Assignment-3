@@ -111,21 +111,11 @@ interval intersect(interval v1, interval v2) {
     }
 }
 
-void updateRange(interval &value1, interval &value2, interval &originalRange) {
-    interval updated = sumOper(value2, originalRange);
-    value1.setLowBound(std::max(updated.getLowBound(), value1.getLowBound()));
-    value1.setHighBound(std::min(updated.getHighBound(), value1.getHighBound()));
-    if (value1.getLowBound() > value1.getHighBound()) {
-        value1.setLowBound(posThreshold);
-        value1.setHighBound(negThreshold);
-    }
-    updated = sumOper(originalRange, value1);
-    value2.setLowBound(std::max(updated.getHighBound() * -1, value2.getLowBound()));
-    value2.setHighBound(std::min(updated.getLowBound() * -1, value2.getHighBound()));
-    if (value2.getLowBound() > value2.getHighBound()) {
-        value2.setLowBound(posThreshold);
-        value2.setHighBound(negThreshold);
-    }
+std::string getSimpleLabel(Instruction &I) {
+    std::string instructionLabel;
+    llvm::raw_string_ostream rso(instructionLabel);
+    I.print(rso);
+    return instructionLabel;
 }
 
 std::vector<interval> getOperRanges(Value *firstOp, Value *secondOp, std::map<Instruction *, interval> &variables, std::map<std::string, Instruction *> &varValuesMap) {
@@ -226,37 +216,6 @@ std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std:
 }
 
 
-bool getIntervalChanges(std::map<Instruction *, interval> &allInstrRangesMap, std::map<Instruction *, interval> &analysisMap) {
-    bool isDifferent = false;
-    for (auto &element : allInstrRangesMap) {
-        if (analysisMap.find(element.first) == analysisMap.end()) {
-            analysisMap[element.first] = element.second;
-            isDifferent = true;
-        } else if (analysisMap[element.first].hasNoRange()) {
-            if (!element.second.hasNoRange()) {
-                analysisMap[element.first] = element.second;
-                isDifferent = true;
-            }
-        } else {
-            bool hasInnerSet;
-            if (element.second.getLowBound() == posThreshold && element.second.getHighBound() == negThreshold) {
-                hasInnerSet = true;
-            }
-            else if (analysisMap[element.first].getLowBound() == posThreshold && analysisMap[element.first].getHighBound() == negThreshold) {
-                hasInnerSet = false;
-            }
-            else
-                hasInnerSet = element.second.getLowBound() >= analysisMap[element.first].getLowBound() && element.second.getHighBound() <= analysisMap[element.first].getHighBound();
-
-            if (!hasInnerSet) {
-                analysisMap[element.first].setLowBound(std::min(element.second.getLowBound(), analysisMap[element.first].getLowBound()));
-                analysisMap[element.first].setHighBound(std::max(element.second.getHighBound(), analysisMap[element.first].getHighBound()));
-                isDifferent = true;
-            }
-        }
-    }
-    return isDifferent;
-}
 
 void isNumOperation(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
     std::string instructionLabel = getSimpleLabel(I);
@@ -339,7 +298,6 @@ interval subsOper(interval left, interval right) {
     }
     return interval(lowBound, highBound);
 }
-
 
 interval multOper(interval left, interval right) {
     if (left.hasNoRange()) {
@@ -526,6 +484,55 @@ void reverseLoadOper(Instruction &I, std::map<Instruction *, interval> &allInstr
             allInstrRangesMap[varValuesMap[instructionLabel]].setHighBound(std::min(allInstrRangesMap[varValuesMap[instructionLabel]].getHighBound(), allInstrRangesMap[varValuesMap[getSimpleLabel(I)]].getHighBound()));
         }
     }
+}
+
+void updateRange(interval &value1, interval &value2, interval &originalRange) {
+    interval updated = sumOper(value2, originalRange);
+    value1.setLowBound(std::max(updated.getLowBound(), value1.getLowBound()));
+    value1.setHighBound(std::min(updated.getHighBound(), value1.getHighBound()));
+    if (value1.getLowBound() > value1.getHighBound()) {
+        value1.setLowBound(posThreshold);
+        value1.setHighBound(negThreshold);
+    }
+    updated = sumOper(originalRange, value1);
+    value2.setLowBound(std::max(updated.getHighBound() * -1, value2.getLowBound()));
+    value2.setHighBound(std::min(updated.getLowBound() * -1, value2.getHighBound()));
+    if (value2.getLowBound() > value2.getHighBound()) {
+        value2.setLowBound(posThreshold);
+        value2.setHighBound(negThreshold);
+    }
+}
+
+bool getIntervalChanges(std::map<Instruction *, interval> &allInstrRangesMap, std::map<Instruction *, interval> &analysisMap) {
+    bool isDifferent = false;
+    for (auto &element : allInstrRangesMap) {
+        if (analysisMap.find(element.first) == analysisMap.end()) {
+            analysisMap[element.first] = element.second;
+            isDifferent = true;
+        } else if (analysisMap[element.first].hasNoRange()) {
+            if (!element.second.hasNoRange()) {
+                analysisMap[element.first] = element.second;
+                isDifferent = true;
+            }
+        } else {
+            bool hasInnerSet;
+            if (element.second.getLowBound() == posThreshold && element.second.getHighBound() == negThreshold) {
+                hasInnerSet = true;
+            }
+            else if (analysisMap[element.first].getLowBound() == posThreshold && analysisMap[element.first].getHighBound() == negThreshold) {
+                hasInnerSet = false;
+            }
+            else
+                hasInnerSet = element.second.getLowBound() >= analysisMap[element.first].getLowBound() && element.second.getHighBound() <= analysisMap[element.first].getHighBound();
+
+            if (!hasInnerSet) {
+                analysisMap[element.first].setLowBound(std::min(element.second.getLowBound(), analysisMap[element.first].getLowBound()));
+                analysisMap[element.first].setHighBound(std::max(element.second.getHighBound(), analysisMap[element.first].getHighBound()));
+                isDifferent = true;
+            }
+        }
+    }
+    return isDifferent;
 }
 
 void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &result){
@@ -1041,12 +1048,6 @@ bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, inter
     return false;
 }
 
-std::string getSimpleLabel(Instruction &I) {
-    std::string instructionLabel;
-    llvm::raw_string_ostream rso(instructionLabel);
-    I.print(rso);
-    return instructionLabel;
-}
 
 int main(int argc, char **argv){
     LLVMContext &Context = getGlobalContext();
