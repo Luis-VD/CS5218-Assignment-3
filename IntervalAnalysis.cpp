@@ -22,6 +22,8 @@
 
 using namespace llvm;
 
+const static int posThreshold = 9999;
+const static int negThreshold = -9999;
 class interval {
 private:
     int lowBound;
@@ -84,8 +86,6 @@ public:
                (this->getHighBound() == posThreshold ? "+INF" : std::to_string(this->getHighBound())) + " ]";
     }
 };
-const static int posThreshold = 9999;
-const static int negThreshold = -9999;
 void storeOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap);
 void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap,
                   std::map<std::string, Instruction *> &varValuesMap,
