@@ -142,18 +142,6 @@ std::vector<interval> getOperRanges(Value *firstOp, Value *secondOp, std::map<In
     return outputRange;
 }
 
-void branchUpdate(Value *firstOp, Value *secondOp, interval &originalRange, std::map<Instruction *, interval> &updatedMap, std::map<std::string, Instruction *> &varValuesMap) {
-    if (isa<llvm::ConstantInt>(firstOp)) {
-        interval range = interval(dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue());
-        updateRange(range, updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
-    } else if (isa<llvm::ConstantInt>(secondOp)) {
-        interval range = interval(dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue());
-        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], range, originalRange);
-    } else {
-        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
-    }
-}
-
 std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> allInstrRangesMap){
     std::map<Instruction *, interval> rangesToUpdate;
     std::vector<Instruction *> instrIntersect;
@@ -213,54 +201,6 @@ std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std:
         }
     }
     return rangesToUpdate;
-}
-
-
-
-void isNumOperation(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
-    std::string instructionLabel = getSimpleLabel(I);
-    interval varRangeLeft, varRangeRight;
-    if(!isa<llvm::ConstantInt>(I.getOperand(0)) && !isa<llvm::ConstantInt>(I.getOperand(1))) {
-        varRangeLeft = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)))]];
-        varRangeRight = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)))]];
-    }
-    else
-    {
-        if(isa<llvm::ConstantInt>(I.getOperand(0)))
-        {
-            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue();
-            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)));
-            interval range = allInstrRangesMap[varValuesMap[varLabel]];
-            varRangeLeft = interval(numValue, numValue);
-            varRangeRight = range;
-        }
-        else if (isa<llvm::ConstantInt>(I.getOperand(1)))
-        {
-            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(1))->getZExtValue();
-            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)));
-            interval range = allInstrRangesMap[varValuesMap[varLabel]];
-            varRangeLeft = range;
-            varRangeRight = interval(numValue, numValue);
-        }
-    }
-    switch(I.getOpcode()){
-        case Instruction::Add: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = sumOper(varRangeLeft, varRangeRight);
-            break;
-        }
-        case Instruction::Sub: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = subsOper(varRangeLeft, varRangeRight);
-            break;
-        }
-        case Instruction::Mul: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = multOper(varRangeLeft, varRangeRight);
-            break;
-        }
-        case Instruction::SRem: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = sRemOper(varRangeLeft, varRangeRight);
-            break;
-        }
-    }
 }
 
 interval sumOper(interval left, interval right) {
@@ -371,6 +311,52 @@ interval sRemOper(interval left, interval right) {
         return left;
     } else {
         return interval(0, std::min(left.getHighBound(), right.getHighBound()-1));
+    }
+}
+
+void isNumOperation(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
+    std::string instructionLabel = getSimpleLabel(I);
+    interval varRangeLeft, varRangeRight;
+    if(!isa<llvm::ConstantInt>(I.getOperand(0)) && !isa<llvm::ConstantInt>(I.getOperand(1))) {
+        varRangeLeft = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)))]];
+        varRangeRight = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)))]];
+    }
+    else
+    {
+        if(isa<llvm::ConstantInt>(I.getOperand(0)))
+        {
+            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue();
+            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)));
+            interval range = allInstrRangesMap[varValuesMap[varLabel]];
+            varRangeLeft = interval(numValue, numValue);
+            varRangeRight = range;
+        }
+        else if (isa<llvm::ConstantInt>(I.getOperand(1)))
+        {
+            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(1))->getZExtValue();
+            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)));
+            interval range = allInstrRangesMap[varValuesMap[varLabel]];
+            varRangeLeft = range;
+            varRangeRight = interval(numValue, numValue);
+        }
+    }
+    switch(I.getOpcode()){
+        case Instruction::Add: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = sumOper(varRangeLeft, varRangeRight);
+            break;
+        }
+        case Instruction::Sub: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = subsOper(varRangeLeft, varRangeRight);
+            break;
+        }
+        case Instruction::Mul: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = multOper(varRangeLeft, varRangeRight);
+            break;
+        }
+        case Instruction::SRem: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = sRemOper(varRangeLeft, varRangeRight);
+            break;
+        }
     }
 }
 
@@ -533,6 +519,18 @@ bool getIntervalChanges(std::map<Instruction *, interval> &allInstrRangesMap, st
         }
     }
     return isDifferent;
+}
+
+void branchUpdate(Value *firstOp, Value *secondOp, interval &originalRange, std::map<Instruction *, interval> &updatedMap, std::map<std::string, Instruction *> &varValuesMap) {
+    if (isa<llvm::ConstantInt>(firstOp)) {
+        interval range = interval(dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue());
+        updateRange(range, updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
+    } else if (isa<llvm::ConstantInt>(secondOp)) {
+        interval range = interval(dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue());
+        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], range, originalRange);
+    } else {
+        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
+    }
 }
 
 void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &result){
