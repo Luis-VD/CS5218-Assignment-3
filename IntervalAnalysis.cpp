@@ -84,7 +84,8 @@ public:
                (this->getHighBound() == posThreshold ? "+INF" : std::to_string(this->getHighBound())) + " ]";
     }
 };
-
+const static int posThreshold = 9999;
+const static int negThreshold = -9999;
 void storeOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap);
 void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap,
                   std::map<std::string, Instruction *> &varValuesMap,
@@ -92,9 +93,6 @@ void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interv
 std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> allInstrRangesMap);
 bool analyseBB(BasicBlock *BB, std::map<Instruction *, interval> &rangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &analysisMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &updatedMap);
 bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &constIntervalMap,std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &intervalAnalysisMap,std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &updatedMap);
-
-const static int posThreshold = 9999;
-const static int negThreshold = -9999;
 
 std::map<BasicBlock *, std::vector<std::map<Instruction *, interval>>> constraint;
 
