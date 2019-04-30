@@ -21,6 +21,15 @@
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
+
+void storeOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap);
+void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap,
+                  std::map<std::string, Instruction *> &varValuesMap,
+                  std::map<BasicBlock *, std::map<Instruction *, interval>> &result);
+std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> allInstrRangesMap);
+bool analyseBB(BasicBlock *BB, std::map<Instruction *, interval> &rangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &analysisMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &updatedMap);
+bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &constIntervalMap,std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &intervalAnalysisMap,std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &updatedMap);
+
 const static int posThreshold = 9999;
 const static int negThreshold = -9999;
 
@@ -95,6 +104,215 @@ class interval {
 };
 
 std::map<BasicBlock *, std::vector<std::map<Instruction *, interval>>> constraint;
+
+interval intersect(interval v1, interval v2) {
+    if (v1.getLowBound() == posThreshold || v2.getLowBound() == posThreshold)
+    {
+        return interval(posThreshold, negThreshold);
+    }
+    else if (v1.getLowBound() > v2.getHighBound() || v2.getLowBound() > v1.getHighBound())
+    {
+        return interval(posThreshold, negThreshold);
+    }
+    else
+    {
+        return interval(std::max(v1.getLowBound(), v2.getLowBound()), std::min(v1.getHighBound(), v2.getHighBound()));
+    }
+}
+
+void updateRange(interval &value1, interval &value2, interval &originalRange) {
+    interval updated = sumOper(value2, originalRange);
+    value1.setLowBound(std::max(updated.getLowBound(), value1.getLowBound()));
+    value1.setHighBound(std::min(updated.getHighBound(), value1.getHighBound()));
+    if (value1.getLowBound() > value1.getHighBound()) {
+        value1.setLowBound(posThreshold);
+        value1.setHighBound(negThreshold);
+    }
+    updated = sumOper(originalRange, value1);
+    value2.setLowBound(std::max(updated.getHighBound() * -1, value2.getLowBound()));
+    value2.setHighBound(std::min(updated.getLowBound() * -1, value2.getHighBound()));
+    if (value2.getLowBound() > value2.getHighBound()) {
+        value2.setLowBound(posThreshold);
+        value2.setHighBound(negThreshold);
+    }
+}
+
+std::vector<interval> getOperRanges(Value *firstOp, Value *secondOp, std::map<Instruction *, interval> &variables, std::map<std::string, Instruction *> &varValuesMap) {
+    interval rangeLeft;
+    interval rangeRight;
+    if (isa<llvm::ConstantInt>(secondOp))
+    {
+        rangeLeft = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]];
+        rangeRight = interval(dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue());
+    }
+    else if (isa<llvm::ConstantInt>(firstOp))
+    {
+        rangeLeft = interval(dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue());
+        rangeRight = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]];
+    }
+    else
+    {
+        rangeLeft = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]];
+        rangeRight = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]];
+    }
+    std::vector<interval> outputRange;
+    outputRange.push_back(rangeLeft);
+    outputRange.push_back(rangeRight);
+    return outputRange;
+}
+
+void branchUpdate(Value *firstOp, Value *secondOp, interval &originalRange, std::map<Instruction *, interval> &updatedMap, std::map<std::string, Instruction *> &varValuesMap) {
+    if (isa<llvm::ConstantInt>(firstOp)) {
+        interval range = interval(dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue());
+        updateRange(range, updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
+    } else if (isa<llvm::ConstantInt>(secondOp)) {
+        interval range = interval(dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue());
+        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], range, originalRange);
+    } else {
+        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
+    }
+}
+
+std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> allInstrRangesMap){
+    std::map<Instruction *, interval> rangesToUpdate;
+    std::vector<Instruction *> instrIntersect;
+    if (allInstrRangesMap.size() == 0)
+    {
+        return rangesToUpdate;
+    }
+    for (auto it = allInstrRangesMap.begin(); it != allInstrRangesMap.end(); it++)
+    {
+        if (it == allInstrRangesMap.begin())
+        {
+            for (auto instrMap : it->second)
+            {
+                instrIntersect.push_back(instrMap.first);
+            }
+        }
+        else
+        {
+            std::vector<Instruction *> disposableSet;
+
+            for (auto instrMap : it->second)
+            {
+                disposableSet.push_back(instrMap.first);
+            }
+
+            std::vector<Instruction*> disposableVector;
+
+            sort(instrIntersect.begin(), instrIntersect.end());
+            sort(disposableSet.begin(), disposableSet.end());
+
+            set_intersection(instrIntersect.begin(),instrIntersect.end(),disposableSet.begin(),disposableSet.end(),back_inserter(disposableVector));
+
+            instrIntersect = disposableVector;
+        }
+    }
+    for (auto it = allInstrRangesMap.begin(); it != allInstrRangesMap.end(); it++) {
+        if (it == allInstrRangesMap.begin())
+        {
+            for (auto &element : instrIntersect)
+            {
+                    rangesToUpdate.insert(std::make_pair(element, it->second[element]));
+            }
+        }
+        else
+        {
+            for (auto &element : instrIntersect)
+            {
+                    rangesToUpdate[element] = interval(std::min(rangesToUpdate[element].getLowBound(), it->second[element].getLowBound()), std::max(rangesToUpdate[element].getHighBound(), it->second[element].getHighBound()));
+            }
+        }
+    }
+    for(auto it = rangesToUpdate.begin(); it != rangesToUpdate.end();){
+        if(it->first->getName().size() == 0 && !it->first->isUsedInBasicBlock(bb)){
+            it = rangesToUpdate.erase(it);
+        }else{
+            it++;
+        }
+    }
+    return rangesToUpdate;
+}
+
+
+bool getIntervalChanges(std::map<Instruction *, interval> &allInstrRangesMap, std::map<Instruction *, interval> &analysisMap) {
+    bool isDifferent = false;
+    for (auto &element : allInstrRangesMap) {
+        if (analysisMap.find(element.first) == analysisMap.end()) {
+            analysisMap[element.first] = element.second;
+            isDifferent = true;
+        } else if (analysisMap[element.first].hasNoRange()) {
+            if (!element.second.hasNoRange()) {
+                analysisMap[element.first] = element.second;
+                isDifferent = true;
+            }
+        } else {
+            bool hasInnerSet;
+            if (element.second.getLowBound() == posThreshold && element.second.getHighBound() == negThreshold) {
+                hasInnerSet = true;
+            }
+            else if (analysisMap[element.first].getLowBound() == posThreshold && analysisMap[element.first].getHighBound() == negThreshold) {
+                hasInnerSet = false;
+            }
+            else
+                hasInnerSet = element.second.getLowBound() >= analysisMap[element.first].getLowBound() && element.second.getHighBound() <= analysisMap[element.first].getHighBound();
+
+            if (!hasInnerSet) {
+                analysisMap[element.first].setLowBound(std::min(element.second.getLowBound(), analysisMap[element.first].getLowBound()));
+                analysisMap[element.first].setHighBound(std::max(element.second.getHighBound(), analysisMap[element.first].getHighBound()));
+                isDifferent = true;
+            }
+        }
+    }
+    return isDifferent;
+}
+
+void isNumOperation(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
+    std::string instructionLabel = getSimpleLabel(I);
+    interval varRangeLeft, varRangeRight;
+    if(!isa<llvm::ConstantInt>(I.getOperand(0)) && !isa<llvm::ConstantInt>(I.getOperand(1))) {
+        varRangeLeft = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)))]];
+        varRangeRight = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)))]];
+    }
+    else
+    {
+        if(isa<llvm::ConstantInt>(I.getOperand(0)))
+        {
+            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue();
+            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)));
+            interval range = allInstrRangesMap[varValuesMap[varLabel]];
+            varRangeLeft = interval(numValue, numValue);
+            varRangeRight = range;
+        }
+        else if (isa<llvm::ConstantInt>(I.getOperand(1)))
+        {
+            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(1))->getZExtValue();
+            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)));
+            interval range = allInstrRangesMap[varValuesMap[varLabel]];
+            varRangeLeft = range;
+            varRangeRight = interval(numValue, numValue);
+        }
+    }
+    switch(I.getOpcode()){
+        case Instruction::Add: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = sumOper(varRangeLeft, varRangeRight);
+            break;
+        }
+        case Instruction::Sub: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = subsOper(varRangeLeft, varRangeRight);
+            break;
+        }
+        case Instruction::Mul: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = multOper(varRangeLeft, varRangeRight);
+            break;
+        }
+        case Instruction::SRem: {
+            allInstrRangesMap[varValuesMap[instructionLabel]] = sRemOper(varRangeLeft, varRangeRight);
+            break;
+        }
+    }
+}
+
 interval sumOper(interval left, interval right) {
     if (left.hasNoRange()) {
         return left;
@@ -106,13 +324,12 @@ interval sumOper(interval left, interval right) {
     int highBound = posThreshold;
     if (left.getLowBound() != negThreshold && right.getLowBound() != negThreshold) {
         lowBound = left.getLowBound() + right.getLowBound();;
-    } 
+    }
     if (left.getHighBound() != posThreshold && right.getHighBound() != posThreshold) {
         highBound = left.getHighBound() + right.getHighBound();
     }
     return interval(lowBound, highBound);
 }
-
 
 interval subsOper(interval left, interval right) {
     if (left.hasNoRange()) {
@@ -153,21 +370,21 @@ interval divOper(interval left, interval right) {
         return interval(negThreshold, posThreshold);
     }
     std::vector<int> cmpList;
-    if(right.getLowBound() == 0) 
+    if(right.getLowBound() == 0)
     {
         cmpList.push_back(left.getLowBound());
         cmpList.push_back(left.getHighBound());
         cmpList.push_back(left.getLowBound()/right.getHighBound());
         cmpList.push_back(left.getHighBound()/right.getHighBound());
     }
-    else if(right.getHighBound() == 0) 
+    else if(right.getHighBound() == 0)
     {
         cmpList.push_back(left.getLowBound() * -1);
         cmpList.push_back(left.getHighBound() * -1);
         cmpList.push_back(left.getLowBound() / right.getLowBound());
         cmpList.push_back(left.getHighBound() / right.getLowBound());
     }
-    else if(right.getLowBound() < 0 && right.getHighBound() > 0) 
+    else if(right.getLowBound() < 0 && right.getHighBound() > 0)
     {
         cmpList.push_back(left.getLowBound());
         cmpList.push_back(left.getLowBound() * -1);
@@ -177,8 +394,8 @@ interval divOper(interval left, interval right) {
         cmpList.push_back(left.getHighBound()/right.getLowBound());
         cmpList.push_back(left.getLowBound()/right.getHighBound());
         cmpList.push_back(left.getHighBound()/right.getHighBound());
-    } 
-    else 
+    }
+    else
     {
         cmpList.push_back(left.getLowBound()/right.getLowBound());
         cmpList.push_back(left.getHighBound()/right.getLowBound());
@@ -208,238 +425,10 @@ interval sRemOper(interval left, interval right) {
     }
 }
 
-
-interval intersect(interval v1, interval v2) {
-    if (v1.getLowBound() == posThreshold || v2.getLowBound() == posThreshold) 
-    {
-        return interval(posThreshold, negThreshold);
-    } 
-    else if (v1.getLowBound() > v2.getHighBound() || v2.getLowBound() > v1.getHighBound()) 
-    {
-        return interval(posThreshold, negThreshold);
-    } 
-    else 
-    {
-        return interval(std::max(v1.getLowBound(), v2.getLowBound()), std::min(v1.getHighBound(), v2.getHighBound()));
-    }
-}
-
-void updateRange(interval &value1, interval &value2, interval &originalRange) {
-    interval updated = sumOper(value2, originalRange);
-    value1.setLowBound(std::max(updated.getLowBound(), value1.getLowBound()));
-    value1.setHighBound(std::min(updated.getHighBound(), value1.getHighBound()));
-    if (value1.getLowBound() > value1.getHighBound()) {
-        value1.setLowBound(posThreshold);
-        value1.setHighBound(negThreshold);
-    }
-    updated = sumOper(originalRange, value1);
-    value2.setLowBound(std::max(updated.getHighBound() * -1, value2.getLowBound()));
-    value2.setHighBound(std::min(updated.getLowBound() * -1, value2.getHighBound()));
-    if (value2.getLowBound() > value2.getHighBound()) {
-        value2.setLowBound(posThreshold);
-        value2.setHighBound(negThreshold);
-    }
-}
-
-std::string getSimpleLabel(Instruction &I) {
-    std::string instructionLabel;
-    llvm::raw_string_ostream rso(instructionLabel);
-    I.print(rso);
-    return instructionLabel;
-}
-
-void storeOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap);
-
-void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap,
-               std::map<std::string, Instruction *> &varValuesMap,
-               std::map<BasicBlock *, std::map<Instruction *, interval>> &result);
-
-std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> allInstrRangesMap);
-
-bool analyseBB(BasicBlock *BB, std::map<Instruction *, interval> &rangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &analysisMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &updatedMap);
-
-bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &constIntervalMap,std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &intervalAnalysisMap,std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &updatedMap);
-
-std::vector<interval> getOperRanges(Value *firstOp, Value *secondOp, std::map<Instruction *, interval> &variables, std::map<std::string, Instruction *> &varValuesMap) {
-    interval rangeLeft;
-    interval rangeRight;
-    if (isa<llvm::ConstantInt>(secondOp)) 
-    {
-        rangeLeft = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]];
-        rangeRight = interval(dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue());
-    } 
-    else if (isa<llvm::ConstantInt>(firstOp)) 
-    {
-        rangeLeft = interval(dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue());
-        rangeRight = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]];
-    } 
-    else 
-    {
-        rangeLeft = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]];
-        rangeRight = variables[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]];
-    }
-    std::vector<interval> outputRange;
-    outputRange.push_back(rangeLeft);
-    outputRange.push_back(rangeRight);
-    return outputRange;
-}
-
-void branchUpdate(Value *firstOp, Value *secondOp, interval &originalRange, std::map<Instruction *, interval> &updatedMap, std::map<std::string, Instruction *> &varValuesMap) {
-    if (isa<llvm::ConstantInt>(firstOp)) {
-        interval range = interval(dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(firstOp)->getZExtValue());
-        updateRange(range, updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
-    } else if (isa<llvm::ConstantInt>(secondOp)) {
-        interval range = interval(dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue(), dyn_cast<llvm::ConstantInt>(secondOp)->getZExtValue());
-        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], range, originalRange);
-    } else {
-        updateRange(updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(firstOp))]], updatedMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(secondOp))]], originalRange);
-    }
-}
-
-std::map<Instruction *, interval> constraintUpdate(BasicBlock *bb, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> allInstrRangesMap) {
-    std::map<Instruction *, interval> rangesToUpdate;
-    std::vector<Instruction *> instrIntersect;
-    if (allInstrRangesMap.size() == 0) 
-    {
-        return rangesToUpdate;
-    }
-    for (auto it = allInstrRangesMap.begin(); it != allInstrRangesMap.end(); it++) 
-    {
-        if (it == allInstrRangesMap.begin()) 
-        {
-            for (auto instrMap : it->second) 
-            {
-                instrIntersect.push_back(instrMap.first);
-            }
-        } 
-        else
-        {
-            std::vector<Instruction *> disposableSet;
-            
-            for (auto instrMap : it->second) 
-            {
-                disposableSet.push_back(instrMap.first);
-            }
-
-            std::vector<Instruction*> disposableVector;
-
-            sort(instrIntersect.begin(), instrIntersect.end());
-            sort(disposableSet.begin(), disposableSet.end());
-
-            set_intersection(instrIntersect.begin(),instrIntersect.end(),disposableSet.begin(),disposableSet.end(),back_inserter(disposableVector));
-            
-            instrIntersect = disposableVector;
-        }
-    }
-    for (auto it = allInstrRangesMap.begin(); it != allInstrRangesMap.end(); it++) {
-        if (it == allInstrRangesMap.begin()) 
-        {
-            for (auto &element : instrIntersect) 
-            {
-                    rangesToUpdate.insert(std::make_pair(element, it->second[element]));
-            }
-        } 
-        else 
-        {
-            for (auto &element : instrIntersect) 
-            {
-                    rangesToUpdate[element] = interval(std::min(rangesToUpdate[element].getLowBound(), it->second[element].getLowBound()), std::max(rangesToUpdate[element].getHighBound(), it->second[element].getHighBound()));
-            }
-        }
-    }
-    for(auto it = rangesToUpdate.begin(); it != rangesToUpdate.end();){
-        if(it->first->getName().size() == 0 && !it->first->isUsedInBasicBlock(bb)){
-            it = rangesToUpdate.erase(it);
-        }else{
-            it++;
-        }
-    }
-    return rangesToUpdate;
-}
-
-
-bool getIntervalChanges(std::map<Instruction *, interval> &allInstrRangesMap, std::map<Instruction *, interval> &analysisMap) {
-    bool isDifferent = false;
-    for (auto &element : allInstrRangesMap) {
-        if (analysisMap.find(element.first) == analysisMap.end()) {
-            analysisMap[element.first] = element.second;
-            isDifferent = true;
-        } else if (analysisMap[element.first].hasNoRange()) {
-            if (!element.second.hasNoRange()) {
-                analysisMap[element.first] = element.second;
-                isDifferent = true;
-            }
-        } else {
-            bool hasInnerSet; 
-            if (element.second.getLowBound() == posThreshold && element.second.getHighBound() == negThreshold) {
-                hasInnerSet = true;
-            }
-            else if (analysisMap[element.first].getLowBound() == posThreshold && analysisMap[element.first].getHighBound() == negThreshold) {
-                hasInnerSet = false;
-            }
-            else 
-                hasInnerSet = element.second.getLowBound() >= analysisMap[element.first].getLowBound() && element.second.getHighBound() <= analysisMap[element.first].getHighBound();
-
-            if (!hasInnerSet) {
-                analysisMap[element.first].setLowBound(std::min(element.second.getLowBound(), analysisMap[element.first].getLowBound()));
-                analysisMap[element.first].setHighBound(std::max(element.second.getHighBound(), analysisMap[element.first].getHighBound()));
-                isDifferent = true;
-            }
-        }
-    }
-    return isDifferent;
-}
-
-void isNumOperation(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
-    std::string instructionLabel = getSimpleLabel(I);
-    interval varRangeLeft, varRangeRight;
-    if(!isa<llvm::ConstantInt>(I.getOperand(0)) && !isa<llvm::ConstantInt>(I.getOperand(1))) {
-        varRangeLeft = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)))]];
-        varRangeRight = allInstrRangesMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)))]];
-    } 
-    else 
-    {
-        if(isa<llvm::ConstantInt>(I.getOperand(0)))
-        {
-            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue();
-            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)));
-            interval range = allInstrRangesMap[varValuesMap[varLabel]];
-            varRangeLeft = interval(numValue, numValue);
-            varRangeRight = range;
-        } 
-        else if (isa<llvm::ConstantInt>(I.getOperand(1)))
-        {
-            int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(1))->getZExtValue();
-            std::string varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)));
-            interval range = allInstrRangesMap[varValuesMap[varLabel]];
-            varRangeLeft = range;
-            varRangeRight = interval(numValue, numValue);
-        }
-    }
-    switch(I.getOpcode()){
-        case Instruction::Add: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = sumOper(varRangeLeft, varRangeRight);
-            break;
-        }
-        case Instruction::Sub: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = subsOper(varRangeLeft, varRangeRight);
-            break;
-        }
-        case Instruction::Mul: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = multOper(varRangeLeft, varRangeRight);
-            break;
-        }
-        case Instruction::SRem: {
-            allInstrRangesMap[varValuesMap[instructionLabel]] = sRemOper(varRangeLeft, varRangeRight);
-            break;
-        }
-    }   
-}
-
 void reverseSumOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
     interval originalRange = allInstrRangesMap[varValuesMap[getSimpleLabel(I)]];
     interval varRangeLeft, varRangeRight;
-    if(!isa<llvm::ConstantInt>(I.getOperand(0)) && !isa<llvm::ConstantInt>(I.getOperand(1))) 
+    if(!isa<llvm::ConstantInt>(I.getOperand(0)) && !isa<llvm::ConstantInt>(I.getOperand(1)))
     {
         std::string varName1 = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)));
         varRangeLeft = allInstrRangesMap[varValuesMap[varName1]];
@@ -447,8 +436,8 @@ void reverseSumOper(Instruction &I, std::map<Instruction *, interval> &allInstrR
         varRangeRight = allInstrRangesMap[varValuesMap[varName2]];
         allInstrRangesMap[varValuesMap[varName1]] = interval(std::max(varRangeLeft.getLowBound(), originalRange.getLowBound() - varRangeRight.getHighBound()), std::min(varRangeLeft.getHighBound(), originalRange.getHighBound() - varRangeRight.getLowBound()));
         allInstrRangesMap[varValuesMap[varName2]] = interval(std::max(varRangeRight.getLowBound(), originalRange.getLowBound() - varRangeLeft.getHighBound()), std::min(varRangeRight.getHighBound(), originalRange.getHighBound() - varRangeLeft.getLowBound()));
-    } 
-    else 
+    }
+    else
     {
         std::string varLabel;
         if(isa<llvm::ConstantInt>(I.getOperand(0)))
@@ -456,7 +445,7 @@ void reverseSumOper(Instruction &I, std::map<Instruction *, interval> &allInstrR
             int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue();
             varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)));
             varRangeRight = interval(numValue, numValue);
-        } 
+        }
         else if (isa<llvm::ConstantInt>(I.getOperand(1)))
         {
             int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(1))->getZExtValue();
@@ -464,7 +453,7 @@ void reverseSumOper(Instruction &I, std::map<Instruction *, interval> &allInstrR
             varRangeRight = interval(numValue, numValue);
         }
         allInstrRangesMap[varValuesMap[varLabel]] = subsOper(originalRange, varRangeRight);
-    }    
+    }
 }
 
 void reverseSubstractOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
@@ -478,8 +467,8 @@ void reverseSubstractOper(Instruction &I, std::map<Instruction *, interval> &all
         varRangeRight = allInstrRangesMap[varValuesMap[varName2]];
         allInstrRangesMap[varValuesMap[varName1]] = interval(std::max(varRangeLeft.getLowBound(), subsOper(originalRange, varRangeRight).getLowBound()), std::min(varRangeLeft.getHighBound(), subsOper(originalRange, varRangeRight).getHighBound()));
         allInstrRangesMap[varValuesMap[varName2]] = interval(std::max(varRangeRight.getLowBound(), subsOper(originalRange, varRangeLeft).getLowBound()), std::min(varRangeRight.getHighBound(), subsOper(originalRange, varRangeLeft).getHighBound()));
-    } 
-    else 
+    }
+    else
     {
         std::string varLabel;
         if(isa<llvm::ConstantInt>(I.getOperand(0)))
@@ -488,7 +477,7 @@ void reverseSubstractOper(Instruction &I, std::map<Instruction *, interval> &all
             varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)));
             varRangeRight = interval(numValue, numValue);
             allInstrRangesMap[varValuesMap[varLabel]] = subsOper(varRangeRight, originalRange);
-        } 
+        }
         else if (isa<llvm::ConstantInt>(I.getOperand(1)))
         {
             int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(1))->getZExtValue();
@@ -512,15 +501,15 @@ void reverseMultOper(Instruction &I, std::map<Instruction *, interval> &allInstr
         interval divRange2 = divOper(originalRange, varRangeLeft);
         allInstrRangesMap[varValuesMap[varName1]] = interval(std::max(varRangeLeft.getLowBound(), divRange1.getLowBound()), std::min(varRangeRight.getHighBound(), divRange1.getHighBound()));
         allInstrRangesMap[varValuesMap[varName2]] = interval(std::max(varRangeRight.getLowBound(), divRange2.getLowBound()), std::min(varRangeRight.getHighBound(), divRange2.getHighBound()));
-    } 
-    else 
+    }
+    else
     {
         std::string varLabel;
         if(isa<llvm::ConstantInt>(I.getOperand(0))){
             int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue();
             varLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)));
             varRangeRight = interval(numValue, numValue);
-        } 
+        }
         else if (isa<llvm::ConstantInt>(I.getOperand(1)))
         {
             int numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(1))->getZExtValue();
@@ -532,15 +521,15 @@ void reverseMultOper(Instruction &I, std::map<Instruction *, interval> &allInstr
 }
 
 void reverseLoadOper(Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap) {
-    
+
     std::string instructionLabel = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)));
 
     if (!allInstrRangesMap[varValuesMap[instructionLabel]].hasNoRange()) {
         if (allInstrRangesMap[varValuesMap[getSimpleLabel(I)]].hasNoRange()) {
             allInstrRangesMap[varValuesMap[instructionLabel]].setLowBound(posThreshold);
             allInstrRangesMap[varValuesMap[instructionLabel]].setHighBound(negThreshold);
-        } 
-        else 
+        }
+        else
         {
             allInstrRangesMap[varValuesMap[instructionLabel]].setLowBound(std::max(allInstrRangesMap[varValuesMap[instructionLabel]].getLowBound(), allInstrRangesMap[varValuesMap[getSimpleLabel(I)]].getLowBound()));
             allInstrRangesMap[varValuesMap[instructionLabel]].setHighBound(std::min(allInstrRangesMap[varValuesMap[instructionLabel]].getHighBound(), allInstrRangesMap[varValuesMap[getSimpleLabel(I)]].getHighBound()));
@@ -548,12 +537,10 @@ void reverseLoadOper(Instruction &I, std::map<Instruction *, interval> &allInstr
     }
 }
 
-void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap,
-               std::map<BasicBlock *, std::map<Instruction *, interval>> &result) 
-{
+void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interval> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &result){
     auto *currInstr = dyn_cast<BranchInst>(&I);
     auto *nextOneInstr = currInstr->getSuccessor(0);
-    if(currInstr->isConditional()) 
+    if(currInstr->isConditional())
     {
         auto *firstOp = dyn_cast<ICmpInst>(I.getOperand(0))->getOperand(0);
         auto *secondOp = dyn_cast<ICmpInst>(I.getOperand(0))->getOperand(1);
@@ -654,40 +641,40 @@ void isBranchOper(BasicBlock *BB, Instruction &I, std::map<Instruction *, interv
     }
 }
 
-bool analyseBB(BasicBlock *BB, std::map<Instruction *, interval> &rangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &analysisMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &updatedMap) 
+bool analyseBB(BasicBlock *BB, std::map<Instruction *, interval> &rangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &analysisMap, std::map<BasicBlock *, std::map<Instruction *, interval>> &updatedMap)
 {
-    for (auto &I: *BB) 
+    for (auto &I: *BB)
     {
         std::string instructionLabel = getSimpleLabel(I);
         varValuesMap[instructionLabel] = &I;
-        switch (I.getOpcode()) 
+        switch (I.getOpcode())
         {
-            case Instruction::Add: 
+            case Instruction::Add:
             {
                 isNumOperation(I, rangesMap, varValuesMap);
                 break;
             }
-            case Instruction::Sub: 
+            case Instruction::Sub:
             {
                 isNumOperation(I, rangesMap, varValuesMap);
                 break;
             }
-            case Instruction::Mul: 
+            case Instruction::Mul:
             {
                 isNumOperation(I, rangesMap, varValuesMap);
                 break;
             }
-            case Instruction::SRem: 
+            case Instruction::SRem:
             {
                 isNumOperation(I, rangesMap, varValuesMap);
                 break;
             }
-            case Instruction::Alloca: 
+            case Instruction::Alloca:
             {
                 rangesMap[varValuesMap[getSimpleLabel(I)]] = interval(negThreshold, posThreshold);
                 break;
             }
-            case Instruction::Store: 
+            case Instruction::Store:
             {
                 if (isa<llvm::ConstantInt>(I.getOperand(0))) {
                     auto numValue = dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue();
@@ -698,18 +685,18 @@ bool analyseBB(BasicBlock *BB, std::map<Instruction *, interval> &rangesMap, std
                 }
                 break;
             }
-            case Instruction::Load: 
+            case Instruction::Load:
             {
                 std::string str = getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)));
                 rangesMap[varValuesMap[getSimpleLabel(I)]] = rangesMap[varValuesMap[str]];
                 break;
             }
-            case Instruction::Br: 
+            case Instruction::Br:
             {
                 isBranchOper(BB, I, rangesMap, varValuesMap, updatedMap);
                 return getIntervalChanges(rangesMap, analysisMap[BB]);
             }
-            case Instruction::Ret: 
+            case Instruction::Ret:
             {
                 return getIntervalChanges(rangesMap, analysisMap[BB]);
             }
@@ -721,7 +708,7 @@ bool analyseBB(BasicBlock *BB, std::map<Instruction *, interval> &rangesMap, std
     return false;
 }
 
-void rangeMathOper(BasicBlock *bb, Instruction &I, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap, std::string operType) 
+void rangeMathOper(BasicBlock *bb, Instruction &I, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap, std::string operType)
 {
     if (allInstrRangesMap.begin()->first->find(&I) != allInstrRangesMap.begin()->first->end()) {
         std::map<Instruction *, interval> updatedMap = constraintUpdate(bb, allInstrRangesMap);
@@ -783,7 +770,7 @@ void rangeMathOper(BasicBlock *bb, Instruction &I, std::map<std::map<Instruction
 }
 
 void processStoreOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &allInstrRangesMap,
-                             std::map<std::string, Instruction *> &varValuesMap) 
+                             std::map<std::string, Instruction *> &varValuesMap)
 {
     auto instrFromOp = varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(1)))];
     interval variablesInter;
@@ -791,7 +778,7 @@ void processStoreOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Ins
         for (auto &givenInterval : allInstrRangesMap) {
             if (isa<llvm::ConstantInt>(I.getOperand(0))) {
                 variablesInter = interval(dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue(), dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue());
-            } 
+            }
             else {
                 variablesInter = givenInterval.second[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)))]];
             }
@@ -801,7 +788,7 @@ void processStoreOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Ins
         std::map<Instruction *, interval> updatedConstraintMap = constraintUpdate(bb, allInstrRangesMap);
         if (isa<llvm::ConstantInt>(I.getOperand(0))) {
             variablesInter = interval(dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue(), dyn_cast<llvm::ConstantInt>(I.getOperand(0))->getZExtValue());
-        } 
+        }
         else {
             variablesInter = updatedConstraintMap[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)))]];
         }
@@ -811,7 +798,7 @@ void processStoreOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Ins
                 for (auto &var : element.second){
                     var.second = interval(posThreshold, negThreshold);
                 }
-            } 
+            }
             else {
                 element.second = updatedConstraintMap;
                 element.second[instrFromOp] = intersect(variablesInter, constraint[instrFromOp]);
@@ -823,17 +810,17 @@ void processStoreOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Ins
         for (auto &constraint : *element.first) {
             element.second[constraint.first] = intersect(constraint.second, element.second[constraint.first]);
         }
-        for (auto &instructionInterval : element.second) 
+        for (auto &instructionInterval : element.second)
         {
-            if (instructionInterval.second.hasNoRange()) 
+            if (instructionInterval.second.hasNoRange())
             {
                 hasNone = true;
                 break;
             }
         }
-        if (hasNone) 
+        if (hasNone)
         {
-            for (auto &instructionInterval : element.second) 
+            for (auto &instructionInterval : element.second)
             {
                 instructionInterval.second = interval(posThreshold, negThreshold);
             }
@@ -853,7 +840,7 @@ void processLoadOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Inst
             interval variablesInter = element.second[varValuesMap[getSimpleLabel(*dyn_cast<Instruction>(I.getOperand(0)))]];
             if (intersect(variablesInter, constraint[&I]).hasNoRange()) {
                 for (auto &var : element.second) var.second = interval(posThreshold, negThreshold);
-            } 
+            }
         else {
                 element.second = updatedConstraintMap;
                 element.second[&I] = intersect(variablesInter, constraint[&I]);
@@ -862,13 +849,13 @@ void processLoadOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Inst
     }
     for (auto &element : allInstrRangesMap) {
         bool hasNone = false;
-        for (auto &constraint : *element.first) 
+        for (auto &constraint : *element.first)
         {
             element.second[constraint.first] = intersect(constraint.second, element.second[constraint.first]);
         }
-        for (auto &instructionInterval : element.second) 
+        for (auto &instructionInterval : element.second)
         {
-            if (instructionInterval.second.hasNoRange()) 
+            if (instructionInterval.second.hasNoRange())
             {
                 hasNone = true;
                 break;
@@ -876,7 +863,7 @@ void processLoadOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Inst
         }
         if (hasNone)
         {
-            for (auto &instructionInterval : element.second) 
+            for (auto &instructionInterval : element.second)
             {
                 instructionInterval.second = interval(posThreshold, negThreshold);
             }
@@ -884,7 +871,7 @@ void processLoadOperation(BasicBlock *bb, Instruction &I, std::map<std::map<Inst
     }
 }
 
-void processBranchOperation(BasicBlock *BB, Instruction &I,std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &updatedBlockIntervalMap) 
+void processBranchOperation(BasicBlock *BB, Instruction &I,std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &allInstrRangesMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &updatedBlockIntervalMap)
 {
     auto *leftBlock = dyn_cast<BranchInst>(&I)->getSuccessor(0);
     if(dyn_cast<BranchInst>(&I)->isConditional()) {
@@ -895,7 +882,7 @@ void processBranchOperation(BasicBlock *BB, Instruction &I,std::map<std::map<Ins
         for (auto &element : leftBranch) {
             bool leftEmptyBranch = false;
             for (auto &constraintElement : *element.first) {
-                if (leftBranchConstr.find(constraintElement.first) != leftBranchConstr.end() && intersect(leftBranchConstr[constraintElement.first], constraintElement.second).hasNoRange()) 
+                if (leftBranchConstr.find(constraintElement.first) != leftBranchConstr.end() && intersect(leftBranchConstr[constraintElement.first], constraintElement.second).hasNoRange())
                 {
                     leftEmptyBranch = true;
                     break;
@@ -911,10 +898,10 @@ void processBranchOperation(BasicBlock *BB, Instruction &I,std::map<std::map<Ins
         }
         for (auto &element : rightBranch) {
             bool rightEmptyBranch = false;
-            for (auto &constraintElement : *element.first) 
+            for (auto &constraintElement : *element.first)
             {
                 if (rightBranchConstr.find(constraintElement.first) != rightBranchConstr.end() &&
-                    intersect(rightBranchConstr[constraintElement.first], constraintElement.second).hasNoRange()) 
+                    intersect(rightBranchConstr[constraintElement.first], constraintElement.second).hasNoRange())
                 {
                     rightEmptyBranch = true;
                     break;
@@ -931,10 +918,10 @@ void processBranchOperation(BasicBlock *BB, Instruction &I,std::map<std::map<Ins
         updatedBlockIntervalMap[leftBlock] = leftBranch;
         auto *rightBlock = dyn_cast<BasicBlock>(dyn_cast<BranchInst>(&I)->getSuccessor(1));
         updatedBlockIntervalMap[rightBlock] = rightBranch;
-    } else 
+    } else
     {
         updatedBlockIntervalMap[leftBlock] = allInstrRangesMap;
-    } 
+    }
 }
 
 bool updateIntervalChecks(std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &constIntervalMap, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &analysisMap)
@@ -943,21 +930,21 @@ bool updateIntervalChecks(std::map<std::map<Instruction *, interval> *, std::map
     for (auto &givenInterval : constIntervalMap) {
         std::map<Instruction *, interval> rangesMap = givenInterval.second;
         std::map<Instruction *, interval> intervalAnalysisMap = analysisMap[givenInterval.first];
-        for (auto &element : rangesMap) 
+        for (auto &element : rangesMap)
         {
             if (intervalAnalysisMap.find(element.first) == intervalAnalysisMap.end()) {
                 analysisMap[givenInterval.first][element.first] = element.second;
                 isDifferent = true;
-            } 
-            else if (intervalAnalysisMap[element.first].hasNoRange()) 
+            }
+            else if (intervalAnalysisMap[element.first].hasNoRange())
             {
-                if (!element.second.hasNoRange()) 
+                if (!element.second.hasNoRange())
                 {
                     analysisMap[givenInterval.first][element.first] = element.second;
                     isDifferent = true;
                 }
             } else {
-                bool hasInnerSet; 
+                bool hasInnerSet;
                 if (element.second.getLowBound() == posThreshold && element.second.getHighBound() == negThreshold) {
                     hasInnerSet = true;
                 }
@@ -971,70 +958,68 @@ bool updateIntervalChecks(std::map<std::map<Instruction *, interval> *, std::map
                     isDifferent = true;
                 }
 
-            } 
+            }
         }
     }
     return isDifferent;
 }
 
-bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &constIntervalMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &intervalAnalysisMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &updatedMap) 
-{
-    for (auto &I: *BB) 
-    {
+bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>> &constIntervalMap, std::map<std::string, Instruction *> &varValuesMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &intervalAnalysisMap, std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> &updatedMap){
+    for (auto &I: *BB){
         switch (I.getOpcode()) {
-            case Instruction::Add: 
+            case Instruction::Add:
             {
                 rangeMathOper(BB, I, constIntervalMap, varValuesMap, "add");
                 break;
             }
-            case Instruction::Sub: 
+            case Instruction::Sub:
             {
                 rangeMathOper(BB, I, constIntervalMap, varValuesMap, "sub");
                 break;
             }
-            case Instruction::Mul: 
+            case Instruction::Mul:
             {
                 rangeMathOper(BB, I, constIntervalMap, varValuesMap, "mul");
                 break;
             }
-            case Instruction::SRem: 
+            case Instruction::SRem:
             {
                 rangeMathOper(BB, I, constIntervalMap, varValuesMap, "srem");
                 break;
             }
-            case Instruction::Br: 
+            case Instruction::Br:
             {
                 processBranchOperation(BB, I, constIntervalMap, varValuesMap, updatedMap);
                 return updateIntervalChecks(constIntervalMap, intervalAnalysisMap[BB]);
             }
-            case Instruction::Alloca: 
+            case Instruction::Alloca:
             {
                 if (constIntervalMap.begin()->first->find(&I) != constIntervalMap.begin()->first->end()) {
                     for (auto &element :constIntervalMap)
                         element.second = constraintUpdate(BB, constIntervalMap);
-                } 
+                }
                 else {
                     for (auto &element : constIntervalMap)
                         element.second[&I] = interval(negThreshold, posThreshold);
                 }
-                for (auto &element : constIntervalMap) 
+                for (auto &element : constIntervalMap)
                 {
                     bool hasNone = false;
-                    for (auto &constraint : *element.first) 
+                    for (auto &constraint : *element.first)
                     {
                         element.second[constraint.first] = intersect(constraint.second, element.second[constraint.first]);
                     }
-                    for (auto &instructionInterval : element.second) 
+                    for (auto &instructionInterval : element.second)
                     {
-                        if (instructionInterval.second.hasNoRange()) 
+                        if (instructionInterval.second.hasNoRange())
                         {
                             hasNone = true;
                             break;
                         }
                     }
-                    if (hasNone) 
+                    if (hasNone)
                     {
-                        for (auto &instructionInterval : element.second) 
+                        for (auto &instructionInterval : element.second)
                         {
                             instructionInterval.second = interval(posThreshold, negThreshold);
                         }
@@ -1042,21 +1027,21 @@ bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, inter
                 }
                 break;
             }
-            case Instruction::Load: 
+            case Instruction::Load:
             {
                 processLoadOperation(BB, I, constIntervalMap, varValuesMap);
                 break;
             }
-            case Instruction::Store: 
+            case Instruction::Store:
             {
                 processStoreOperation(BB, I, constIntervalMap, varValuesMap);
                 break;
             }
-            case Instruction::Ret: 
+            case Instruction::Ret:
             {
                 return updateIntervalChecks(constIntervalMap, intervalAnalysisMap[BB]);
             }
-            default: 
+            default:
             {
                 break;
             }
@@ -1065,9 +1050,14 @@ bool checkBasicBlockRange(BasicBlock *BB, std::map<std::map<Instruction *, inter
     return false;
 }
 
+std::string getSimpleLabel(Instruction &I) {
+    std::string instructionLabel;
+    llvm::raw_string_ostream rso(instructionLabel);
+    I.print(rso);
+    return instructionLabel;
+}
 
-int main(int argc, char **argv) 
-{
+int main(int argc, char **argv){
     LLVMContext &Context = getGlobalContext();
     SMDiagnostic Err;
     Module *M = ParseIRFile(argv[1], Err, Context);
@@ -1111,21 +1101,21 @@ int main(int argc, char **argv)
         std::map<BasicBlock *, std::map<Instruction *, interval>> result;
 
         for (auto &I: *BB) {
-            if (I.getOpcode() == Instruction::Br) 
+            if (I.getOpcode() == Instruction::Br)
             {
                 isBranchOper(BB, I, rangesMap, varValuesMap, result);
-                if (result.size() > 1) 
+                if (result.size() > 1)
                 {
-                    for (auto &attributesMap : result) 
+                    for (auto &attributesMap : result)
                     {
                         constraint[BB].push_back(attributesMap.second);
                     }
-                    for (auto it = constraint[BB][0].begin(); it != constraint[BB][0].end();) 
+                    for (auto it = constraint[BB][0].begin(); it != constraint[BB][0].end();)
                     {
                         bool erase = false;
-                        for (auto innerIt = constraint[BB][1].begin(); innerIt != constraint[BB][1].end(); innerIt++) 
+                        for (auto innerIt = constraint[BB][1].begin(); innerIt != constraint[BB][1].end(); innerIt++)
                         {
-                            if (it->second.toString() == innerIt->second.toString()) 
+                            if (it->second.toString() == innerIt->second.toString())
                             {
                                 it = constraint[BB][0].erase(it);
                                 innerIt = constraint[BB][1].erase(innerIt);
@@ -1162,29 +1152,29 @@ int main(int argc, char **argv)
         }
     }
 
-    for (auto attributesMap : constraint) 
+    for (auto attributesMap : constraint)
     {
-        if (attributesMap.second.size() != 0 && attributesMap.second[0].size() != 0) 
+        if (attributesMap.second.size() != 0 && attributesMap.second[0].size() != 0)
         {
-            if (mainConstraintMap.size() == 0) 
+            if (mainConstraintMap.size() == 0)
             {
                 mainConstraintMap = attributesMap.second;
-            } 
-            else 
+            }
+            else
             {
                 std::vector<std::map<Instruction *, interval>> backup = mainConstraintMap;
                 mainConstraintMap.clear();
 
-                for (auto constraintVector : attributesMap.second) 
+                for (auto constraintVector : attributesMap.second)
                 {
                     for (auto temporaryMap : backup) {
-                        for (auto it = constraintVector.begin(); it != constraintVector.end(); it++) 
+                        for (auto it = constraintVector.begin(); it != constraintVector.end(); it++)
                         {
-                            if (temporaryMap.find(it->first) != temporaryMap.end()) 
+                            if (temporaryMap.find(it->first) != temporaryMap.end())
                             {
                                 temporaryMap.insert(std::make_pair(it->first, intersect(temporaryMap.find(it->first)->second, it->second)));
                             }
-                            else 
+                            else
                             {
                                 temporaryMap.insert(*it);
                             }
@@ -1202,7 +1192,7 @@ int main(int argc, char **argv)
     }
     intervalTraversalStack.push(std::make_pair(entryBB, emptyMap));
 
-    while (!intervalTraversalStack.empty()) 
+    while (!intervalTraversalStack.empty())
     {
         std::map<BasicBlock *, std::map<std::map<Instruction *, interval> *, std::map<Instruction *, interval>>> updatedMap;
         auto pair = intervalTraversalStack.top();
